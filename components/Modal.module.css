@@ -1,0 +1,134 @@
+/* components/Modal.module.css */
+.modalOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.6); /* Darker overlay */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1050; /* High z-index */
+  opacity: 0;
+  animation: fadeIn 0.3s forwards;
+}
+
+@keyframes fadeIn {
+  to {
+    opacity: 1;
+  }
+}
+
+.modalContent {
+  background-color: #fff; /* Light background for the modal content */
+  color: #333; /* Dark text for readability */
+  padding: 25px 30px;
+  border-radius: 12px; /* More rounded */
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.25);
+  position: relative;
+  max-height: 90vh;
+  overflow-y: auto;
+  transform: translateY(-50px);
+  opacity: 0;
+  animation: slideIn 0.4s 0.1s forwards cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Sizes */
+.modalContent.sm {
+  width: 100%;
+  max-width: 380px;
+}
+.modalContent.md { /* Default */
+  width: 100%;
+  max-width: 500px;
+}
+.modalContent.lg {
+  width: 100%;
+  max-width: 700px;
+}
+
+
+@keyframes slideIn {
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.modalTitle {
+  font-size: 1.6em;
+  font-weight: 600;
+  color: #2c3e50; /* Dark, strong title color */
+  margin-top: 0;
+  margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #eee;
+}
+
+.modalBody {
+  margin-bottom: 25px;
+  font-size: 1em;
+  line-height: 1.6;
+  color: #555;
+}
+
+.modalFooter {
+  display: flex;
+  justify-content: flex-end; /* Align buttons to the right */
+  gap: 10px; /* Space between buttons */
+  padding-top: 20px;
+  border-top: 1px solid #eee;
+}
+
+.modalButton {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.95em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.confirmButton {
+  background-color: #007bff; /* Your primary blue */
+  color: white;
+}
+.confirmButton:hover {
+  background-color: #0056b3;
+  transform: translateY(-1px);
+}
+.confirmButton.alertConfirm { /* For single "OK" button in alert type */
+   /* background-color: #28a745; Green for OK */
+}
+.confirmButton.alertConfirm:hover {
+   /* background-color: #1e7e34; */
+}
+
+
+.cancelButton {
+  background-color: #f0f0f0; /* Light gray for cancel */
+  color: #333;
+  border: 1px solid #ccc;
+}
+.cancelButton:hover {
+  background-color: #e0e0e0;
+  transform: translateY(-1px);
+}
+
+.closeButton {
+  position: absolute;
+  top: 15px;
+  right: 20px;
+  background: none;
+  border: none;
+  font-size: 1.8em;
+  color: #aaa;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+.closeButton:hover {
+  color: #777;
+}

@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sentMessages     Message[]         @relation("SentMessages")
+  chatParticipants ChatParticipant[]
+  readReceipts     ReadReceipt[]
+}
+
+model Chat {
+  id        String   @id @default(cuid())
+  name      String? // For group chats
+  isGroup   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages         Message[]
+  participants     ChatParticipant[]
+  lastMessageAt    DateTime?         // For sorting chats
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  content   String   // Can be caption for image, or text for text message. Ensure it can be empty if needed for images.
+                   // If images NEVER have text content, you could make this String?
+                   // But your server.js defaults it to '' if not provided, so `String` is okay.
+  imageUrl  String?  // <-- ADD THIS: URL of the uploaded image, optional
+  messageType String @default("text") // <-- ADD THIS: "text", "image", etc.
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sender    User   @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade) // Added onDelete
+  senderId  String
+  chat      Chat   @relation(fields: [chatId], references: [id], onDelete: Cascade) // Added onDelete
+  chatId    String
+
+  readReceipts ReadReceipt[]
+
+  @@index([chatId, createdAt])
+}
+
+model ChatParticipant {
+  userId String
+  chatId String
+  user   User   @relation(fields: [userId], references: [id])
+  chat   Chat   @relation(fields: [chatId], references: [id])
+
+  @@id([userId, chatId])
+}
+
+model ReadReceipt {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  readAt    DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId]) // A user can only read a message once
+  @@index([messageId])
+  @@index([userId])
+}
