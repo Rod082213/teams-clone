@@ -1,8 +1,9 @@
 // pages/index.js
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import io from 'socket.io-client';
 import Head from 'next/head';
 import dynamic from 'next/dynamic';
+import Image from 'next/image';
 import Modal from '../components/Modal';
 
 const EmojiPicker = dynamic(
@@ -16,12 +17,12 @@ const EmojiPicker = dynamic(
 const UserAvatar = ({ username, size = 40, style, imageUrl }) => {
   if (imageUrl) {
     return (
-      <img 
+      <Image 
         src={imageUrl} 
         alt={username ? `${username}'s avatar` : 'User avatar'}
+        width={size}
+        height={size}
         style={{
-          width: `${size}px`,
-          height: `${size}px`,
           borderRadius: '50%',
           marginRight: '10px',
           objectFit: 'cover',
@@ -92,6 +93,7 @@ export default function Home({ theme, toggleTheme }) {
   const [imageToSend, setImageToSend] = useState(null);
   const [imageCaption, setImageCaption] = useState('');
   const [isImagePreviewModalOpen, setIsImagePreviewModalOpen] = useState(false);
+  const [imageLoadErrors, setImageLoadErrors] = useState({});
 
   const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false);
   const [editUsername, setEditUsername] = useState('');
@@ -105,15 +107,21 @@ export default function Home({ theme, toggleTheme }) {
 
   // Refs for Header Dropdown
   const [isHeaderDropdownOpen, setIsHeaderDropdownOpen] = useState(false);
-  const headerDropdownRef = useRef(null);     // For the dropdown menu itself
-  const headerDotsButtonRef = useRef(null); // For the 3-dots button that opens it
+  const headerDropdownRef = useRef(null);
+  const headerDotsButtonRef = useRef(null);
+  const activeChatRef = useRef(activeChat);
 
-  const openModal = ({ title, content, onConfirm, onCancel, confirmText, cancelText, type = 'alert', size = 'md' }) => {
+  useEffect(() => {
+    activeChatRef.current = activeChat;
+  }, [activeChat]);
+
+  const openModal = useCallback(({ title, content, onConfirm, onCancel, confirmText, cancelText, type = 'alert', size = 'md' }) => {
     setModalState({ isOpen: true, title, content, onConfirm, onCancel, confirmText, cancelText, type, size });
-  };
-  const closeModal = () => {
+  }, []);
+
+  const closeModal = useCallback(() => {
     setModalState(prev => ({ ...prev, isOpen: false, onConfirm: null, onCancel: null }));
-  };
+  }, []);
 
   const onEmojiClick = (event, emojiObject) => { 
     const emoji = emojiObject?.emoji || event?.emoji;
@@ -121,12 +129,23 @@ export default function Home({ theme, toggleTheme }) {
       setNewMessage(prevInput => prevInput + emoji);
     }
   };
-  const openImageViewModal = (imageUrl) => {
+  
+  const openImageViewModal = useCallback((imageUrl) => {
     openModal({
-      content: ( <div style={{ textAlign: 'center', padding: '10px 0' }}> <img src={imageUrl} alt="Full view" style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '8px', objectFit: 'contain' }} /> </div> ),
+      content: (
+        <div style={{ position: 'relative', width: '100%', height: '80vh', textAlign: 'center' }}>
+          <Image
+            src={imageUrl}
+            alt="Full view"
+            layout="fill"
+            objectFit="contain"
+            priority
+          />
+        </div>
+      ),
       type: 'alert', size: 'lg',
     });
-  };
+  }, [openModal]);
 
   useEffect(() => {
     const checkMobileView = () => {
@@ -185,7 +204,10 @@ export default function Home({ theme, toggleTheme }) {
         const user = JSON.parse(storedUser);
         if (user && user.id && user.username) setCurrentUser(user);
         else localStorage.removeItem('currentUser');
-      } catch (e) { localStorage.removeItem('currentUser'); }
+      } catch (e) { 
+        console.error("Failed to parse user from localStorage:", e);
+        localStorage.removeItem('currentUser'); 
+      }
     }
   }, []);
 
@@ -197,7 +219,61 @@ export default function Home({ theme, toggleTheme }) {
     }
     if(showEmojiPicker) document.addEventListener("mousedown", handleClickOutsideEmojiPicker);
     return () => document.removeEventListener("mousedown", handleClickOutsideEmojiPicker);
-  }, [showEmojiPicker, emojiPickerRef, emojiButtonRef]);
+  }, [showEmojiPicker]);
+
+  const initializeSocket = useCallback((userId) => {
+    if (!userId) return () => {};
+    if (socket && socket.connected && socket.authUserId === userId) return () => {};
+    if (socket) socket.disconnect();
+    
+    socket = io(undefined, { path: '/socket.io' });
+    socket.authUserId = userId;
+    
+    socket.on('connect', () => { 
+        socket.emit('authenticate', userId); 
+        if (activeChatRef.current?.id) socket.emit('join_chat', activeChatRef.current.id); 
+    });
+    
+    socket.on('receive_message', (newMessageObject) => {
+      if (!newMessageObject?.chatId || !newMessageObject.id || !newMessageObject.sender) return;
+      setChats(prev => prev.map(c => c.id === newMessageObject.chatId ? { ...c, messages: [newMessageObject], lastMessageAt: newMessageObject.createdAt } : c).sort((a,b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0)));
+      setActiveChat(currActive => {
+        if (currActive?.id === newMessageObject.chatId) {
+          setMessages(prevMsgs => {
+            const optIdx = prevMsgs.findIndex(m => m.isOptimistic && m.tempId === newMessageObject.tempId && m.senderId === currentUser?.id);
+            if (optIdx > -1 && newMessageObject.senderId === currentUser?.id) { const u = [...prevMsgs]; u[optIdx] = {...newMessageObject, isOptimistic: false}; return u; }
+            else if (!prevMsgs.find(m => m.id === newMessageObject.id)) return [...prevMsgs, {...newMessageObject, isOptimistic: false}];
+            return prevMsgs;
+          });
+          if (currentUser?.id !== newMessageObject.senderId) socket.emit('message_read', { messageId: newMessageObject.id, userId: currentUser.id, chatId: newMessageObject.chatId });
+        }
+        return currActive;
+      });
+    });
+    
+    socket.on('read_receipt_update', ({ messageId, userId: rId, readAt, username: rName }) => {
+      setMessages(prevMsgs => prevMsgs.map(m => m.id === messageId ? (m.readReceipts?.find(rr => rr.userId === rId) ? m : {...m, readReceipts: [...(m.readReceipts || []), {userId: rId, readAt, user:{username: rName||'User'}}]}) : m));
+    });
+    
+    socket.on('disconnect', r => console.log(`CLIENT: Socket disconnected: ${r}`));
+    socket.on('connect_error', e => console.error(`CLIENT: Socket connect_error: ${e.message}`, e));
+    socket.on('message_error', e => openModal({title: "Chat Error", content: e.message}));
+    
+    return () => { if (socket) { socket.removeAllListeners(); socket.disconnect(); socket = null; }};
+  }, [currentUser, openModal]);
+
+  const fetchChats = useCallback(async (userId) => {
+    if (!userId) return;
+    try {
+      const res = await fetch(`/api/chats?userId=${userId}`);
+      const data = await res.json();
+      if (res.ok) setChats(data.sort((a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0)));
+      else setChats([]);
+    } catch (error) { 
+      console.error("Failed to fetch chats:", error);
+      setChats([]); 
+    }
+  }, []);
 
   useEffect(() => {
     let cleanupSocketFunction;
@@ -211,7 +287,7 @@ export default function Home({ theme, toggleTheme }) {
         if (cleanupSocketFunction) cleanupSocketFunction();
         else if (socket && !currentUser) { socket.disconnect(); socket = null; }
     };
-  }, [currentUser?.id]);
+  }, [currentUser, fetchChats, initializeSocket]);
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -225,7 +301,10 @@ export default function Home({ theme, toggleTheme }) {
         if (authMode === 'register') { openModal({title: "Registration Success", content: "Registration successful! Please log in."}); setAuthMode('login'); setPasswordInput(''); }
         else { setCurrentUser(data.user); localStorage.setItem('currentUser', JSON.stringify(data.user)); }
       } else { setAuthError(data.error || `An error occurred during ${authMode}.`); }
-    } catch (error) { setAuthError(`An error occurred. Please try again.`); }
+    } catch (error) { 
+        console.error("Auth submit error:", error);
+        setAuthError(`An error occurred. Please try again.`); 
+    }
     finally { setAuthLoading(false); }
   };
 
@@ -237,25 +316,18 @@ export default function Home({ theme, toggleTheme }) {
     setShowChatWindowOnMobile(false);
   };
 
-  const fetchChats = async (userId) => {
-    if (!userId) return;
-    try {
-      const res = await fetch(`/api/chats?userId=${userId}`);
-      const data = await res.json();
-      if (res.ok) setChats(data.sort((a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0)));
-      else setChats([]);
-    } catch (error) { setChats([]); }
-  };
-
-  const fetchMessages = async (chatId) => {
+  const fetchMessages = useCallback(async (chatId) => {
     if (!chatId || !currentUser || !currentUser.id) { setMessages([]); return; }
     try {
       const res = await fetch(`/api/messages/${chatId}?userId=${currentUser.id}`);
       const data = await res.json();
       if (res.ok) { setMessages(data); setExpandedMessageId(null); }
       else setMessages([]);
-    } catch (error) { setMessages([]); }
-  };
+    } catch (error) { 
+        console.error("Failed to fetch messages:", error);
+        setMessages([]); 
+    }
+  }, [currentUser]);
   
   const openNewChatModal = () => {
     if (!currentUser || !currentUser.id) { openModal({ title: "Login Required", content: "Please log in to create a new chat." }); return; }
@@ -277,7 +349,10 @@ export default function Home({ theme, toggleTheme }) {
         setChats(prev => [newChatData, ...prev.filter(c => c.id !== newChatData.id)].sort((a,b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0)));
         setActiveChat(newChatData); socket?.emit('join_chat', newChatData.id);
       } else { openModal({ title: "Chat Creation Failed", content: `Failed: ${newChatData.error || 'Unknown error'}` }); }
-    } catch (error) { openModal({ title: "Error", content: 'Error creating chat.' }); }
+    } catch (error) { 
+        console.error("Error creating chat:", error);
+        openModal({ title: "Error", content: 'Error creating chat.' }); 
+    }
   };
   
   const handleDeleteChat = async (chatIdToDelete) => {
@@ -292,7 +367,10 @@ export default function Home({ theme, toggleTheme }) {
             if (activeChat?.id === chatIdToDelete) { setActiveChat(null); setMessages([]); }
             openModal({ title: 'Success', content: 'Chat deleted.' });
           } else { const data = await res.json().catch(() => ({error: "Failed to parse error"})); openModal({ title: 'Error', content: `Failed: ${data.error || 'Server error'}` }); }
-        } catch (error) { openModal({ title: 'Error', content: 'Error deleting chat.' }); }
+        } catch (error) { 
+            console.error("Error deleting chat:", error);
+            openModal({ title: 'Error', content: 'Error deleting chat.' }); 
+        }
       },
     });
     setOpenDropdownChatId(null);
@@ -312,42 +390,13 @@ export default function Home({ theme, toggleTheme }) {
             openModal({title: "User Blocked", content: `${otherUsername} blocked.`});
             fetchChats(currentUser.id); if (activeChat?.id === chatContext.id) setActiveChat(null);
           } else { const data = await res.json().catch(() => ({error: "Failed to parse error"})); openModal({title: "Error", content: `Failed: ${data.error || 'Server error'}`});}
-        } catch (error) { openModal({title: "Error", content: 'Error blocking user.'}); }
+        } catch (error) { 
+            console.error("Error blocking user:", error);
+            openModal({title: "Error", content: 'Error blocking user.'}); 
+        }
       },
     });
     setOpenDropdownChatId(null);
-  };
-
-  const initializeSocket = (userId) => {
-    if (!userId) return () => {};
-    if (socket && socket.connected && socket.authUserId === userId) return () => {};
-    if (socket) socket.disconnect();
-    socket = io(undefined, { path: '/socket.io' });
-    socket.authUserId = userId;
-    socket.on('connect', () => { socket.emit('authenticate', userId); if (activeChat?.id) socket.emit('join_chat', activeChat.id); });
-    socket.on('receive_message', (newMessageObject) => {
-      if (!newMessageObject?.chatId || !newMessageObject.id || !newMessageObject.sender) return;
-      setChats(prev => prev.map(c => c.id === newMessageObject.chatId ? { ...c, messages: [newMessageObject], lastMessageAt: newMessageObject.createdAt } : c).sort((a,b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0)));
-      setActiveChat(currActive => {
-        if (currActive?.id === newMessageObject.chatId) {
-          setMessages(prevMsgs => {
-            const optIdx = prevMsgs.findIndex(m => m.isOptimistic && m.tempId === newMessageObject.tempId && m.senderId === currentUser?.id);
-            if (optIdx > -1 && newMessageObject.senderId === currentUser?.id) { const u = [...prevMsgs]; u[optIdx] = {...newMessageObject, isOptimistic: false}; return u; }
-            else if (!prevMsgs.find(m => m.id === newMessageObject.id)) return [...prevMsgs, {...newMessageObject, isOptimistic: false}];
-            return prevMsgs;
-          });
-          if (currentUser?.id !== newMessageObject.senderId) socket.emit('message_read', { messageId: newMessageObject.id, userId: currentUser.id, chatId: newMessageObject.chatId });
-        }
-        return currActive;
-      });
-    });
-    socket.on('read_receipt_update', ({ messageId, userId: rId, readAt, username: rName }) => {
-      setMessages(prevMsgs => prevMsgs.map(m => m.id === messageId ? (m.readReceipts?.find(rr => rr.userId === rId) ? m : {...m, readReceipts: [...(m.readReceipts || []), {userId: rId, readAt, user:{username: rName||'User'}}]}) : m));
-    });
-    socket.on('disconnect', r => console.log(`CLIENT: Socket disconnected: ${r}`));
-    socket.on('connect_error', e => console.error(`CLIENT: Socket connect_error: ${e.message}`, e));
-    socket.on('message_error', e => openModal({title: "Chat Error", content: e.message}));
-    return () => { if (socket) { socket.removeAllListeners(); socket.disconnect(); socket = null; }};
   };
   
   const getReadByNames = (message) => {
@@ -358,17 +407,18 @@ export default function Home({ theme, toggleTheme }) {
 
   const handleMessageTap = (messageId) => setExpandedMessageId(prevId => (prevId === messageId ? null : messageId));
 
-  useEffect(() => {}, [currentUser]); 
-
   useEffect(() => {
-    if (activeChat?.id && currentUser?.id) { fetchMessages(activeChat.id); if (socket?.connected) socket.emit('join_chat', activeChat.id); }
+    if (activeChat?.id && currentUser?.id) { 
+        fetchMessages(activeChat.id); 
+        if (socket?.connected) socket.emit('join_chat', activeChat.id); 
+    }
     else setMessages([]);
-  }, [activeChat?.id, currentUser?.id, socket?.connected]);
+  }, [activeChat?.id, currentUser?.id, fetchMessages]);
 
   useEffect(() => { if(messages?.length) messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   useEffect(() => {
-    if (!activeChat?.id || !currentUser?.id || !socket || !messages?.length) return () => {};
+    if (!activeChat?.id || !currentUser?.id || !messages?.length) return () => {};
     const observer = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         if (entry.isIntersecting) {
@@ -376,7 +426,7 @@ export default function Home({ theme, toggleTheme }) {
           if (optimistic === "true") { observer.unobserve(entry.target); return; }
           const msg = messages.find(m => m.id === messageId);
           if (msg && senderId !== currentUser.id && !msg.readReceipts?.some(rr => rr.userId === currentUser.id)) {
-            socket.emit('message_read', { messageId, userId: currentUser.id, chatId: activeChat.id });
+            socket?.emit('message_read', { messageId, userId: currentUser.id, chatId: activeChat.id });
           }
           observer.unobserve(entry.target);
         }
@@ -387,7 +437,7 @@ export default function Home({ theme, toggleTheme }) {
       if (msg && msg.senderId !== currentUser.id && !msg.readReceipts?.some(rr => rr.userId === currentUser.id)) observer.observe(el);
     });
     return () => observer.disconnect();
-  }, [messages, activeChat?.id, currentUser?.id, socket]);
+  }, [messages, activeChat?.id, currentUser?.id]);
 
   const handleSendMessage = (contentOverride) => {
     const textToSend = (typeof contentOverride === 'string' ? contentOverride : newMessage).trim();
@@ -440,7 +490,11 @@ export default function Home({ theme, toggleTheme }) {
       if (res.ok && data.imageUrl) {
         socket.emit('send_message', { chatId: activeChat.id, senderId: currentUser.id, content: imageCaption, imageUrl: data.imageUrl, messageType: 'image', tempId: tempId });
       }  else { openModal({ title: 'Image Upload Failed', content: data.error || 'Could not upload image.' }); setMessages(prev => prev.filter(msg => msg.id !== tempId)); }
-    } catch (error) { openModal({ title: 'Error', content: 'An error occurred during image upload.' }); setMessages(prev => prev.filter(msg => msg.id !== tempId)); }
+    } catch (error) { 
+      console.error("Image upload error:", error);
+      openModal({ title: 'Error', content: 'An error occurred during image upload.' }); 
+      setMessages(prev => prev.filter(msg => msg.id !== tempId)); 
+    }
     finally { setUploadingImage(false); setImageToSend(null); setImageCaption(''); if (localOptimisticUrl) URL.revokeObjectURL(localOptimisticUrl); if(imageUploadInputRef.current) imageUploadInputRef.current.value = ""; }
   };
   
@@ -483,7 +537,10 @@ export default function Home({ theme, toggleTheme }) {
         openModal({ title: "Success", content: "Profile updated successfully!" });
         setIsEditProfileModalOpen(false); setEditAvatarFile(null); setEditAvatarPreview(data.user.avatarUrl || null);
       } else { openModal({ title: "Update Failed", content: data.error || "Could not update profile." }); }
-    } catch (error) { openModal({ title: "Error", content: "Error updating profile." }); }
+    } catch (error) { 
+      console.error("Profile update error:", error);
+      openModal({ title: "Error", content: "Error updating profile." }); 
+    }
     finally { setProfileUpdateLoading(false); }
   };
   
@@ -537,7 +594,14 @@ export default function Home({ theme, toggleTheme }) {
         </div>
       </Modal>
       <Modal isOpen={isImagePreviewModalOpen} onClose={() => { setIsImagePreviewModalOpen(false); if (imageToSend && typeof imageToSend === 'object' && imageToSend instanceof Blob ) URL.revokeObjectURL(URL.createObjectURL(imageToSend)); setImageToSend(null); setImageCaption(''); }} title="Send Image" onConfirm={confirmAndSendImageWithCaption} confirmText="Send" type="confirm" size="md">
-        {imageToSend && ( <div style={{ textAlign: 'center' }}> <img src={typeof imageToSend === 'string' ? imageToSend : URL.createObjectURL(imageToSend)} alt="Preview" style={{ maxWidth: '100%', maxHeight: '300px', borderRadius: '8px', marginBottom: '15px', border: '1px solid var(--border-color)'}} /> <textarea value={imageCaption} onChange={(e) => setImageCaption(e.target.value)} placeholder="Add a caption... (optional)" rows="2" className="auth-input" style={{ width: '100%', marginBottom: '0px' }} /> </div> )}
+        {imageToSend && ( 
+            <div style={{ textAlign: 'center' }}>
+                <div style={{ position: 'relative', width: '100%', height: '300px', marginBottom: '15px' }}>
+                    <Image src={URL.createObjectURL(imageToSend)} alt="Preview" layout="fill" objectFit="contain" style={{ borderRadius: '8px', border: '1px solid var(--border-color)'}} />
+                </div>
+                <textarea value={imageCaption} onChange={(e) => setImageCaption(e.target.value)} placeholder="Add a caption... (optional)" rows="2" className="auth-input" style={{ width: '100%', marginBottom: '0px' }} />
+            </div> 
+        )}
       </Modal>
       <Modal isOpen={isEditProfileModalOpen} onClose={() => { setIsEditProfileModalOpen(false); setEditAvatarFile(null); setEditAvatarPreview(null); }} title="Edit Your Profile" onConfirm={handleProfileUpdate} confirmText={profileUpdateLoading ? "Saving..." : "Save Changes"} type="confirm" size="md">
         <form onSubmit={handleProfileUpdate}>
@@ -657,10 +721,25 @@ export default function Home({ theme, toggleTheme }) {
                     <div className="messages-list">
                         {(messages || []).map((msg) => {
                             const isExpanded = expandedMessageId === msg.id;
+                            const hasLoadError = imageLoadErrors[msg.id];
                             return (
                             <div key={msg.id} className={`message-item ${msg.senderId === currentUser.id ? 'sent' : 'received'} ${msg.isOptimistic ? 'optimistic' : ''}`} data-message-id={msg.id} data-sender-id={msg.senderId} data-optimistic={msg.isOptimistic ? "true" : undefined} onClick={() => handleMessageTap(msg.id)} style={{ cursor: 'pointer' }}>
                             {msg.senderId !== currentUser.id && msg.sender && ( <div style={{display: 'flex', alignItems: 'center', marginBottom: '2px'}}> <UserAvatar username={msg.sender.username} imageUrl={msg.sender.avatarUrl} size={25} style={{marginRight: '6px'}}/> <div className="message-sender">{msg.sender.username}</div> </div> )}
-                            {msg.messageType === 'image' && msg.imageUrl ? ( <img src={msg.isOptimistic && msg.imageUrl.startsWith('blob:') ? msg.imageUrl : msg.imageUrl} alt={msg.content || "Uploaded image"} style={{ maxWidth: '250px', maxHeight: '250px', borderRadius: '12px', marginTop: '5px', display:'block', cursor: 'pointer', border: '1px solid var(--border-color)'}} onClick={(e) => {e.stopPropagation(); if (!msg.isOptimistic && msg.imageUrl && !msg.imageUrl.startsWith('blob:')) {openImageViewModal(msg.imageUrl);}}}  onError={(e) => { e.target.style.display = 'none'; const parent = e.target.parentElement; if(parent) parent.insertAdjacentHTML('beforeend', '<p style="color:var(--text-tertiary); font-size:0.8em;">Image load failed</p>')}} /> ) : ( <div className="message-content" style={{ padding: msg.senderId === currentUser.id ? '8px 12px' : (msg.sender ? '0px 0px 8px 31px' : '8px 12px'), wordBreak: 'break-word' }} dangerouslySetInnerHTML={{ __html: msg.content.replace(/\n/g, '<br />') }}></div> )}
+                            {msg.messageType === 'image' && msg.imageUrl ? (
+                                hasLoadError ? (
+                                    <p style={{color: 'var(--text-tertiary)', fontSize: '0.8em', padding: '10px', border: '1px dashed var(--border-color)', borderRadius: '12px'}}>Image load failed</p>
+                                ) : (
+                                    <Image 
+                                        src={msg.isOptimistic && msg.imageUrl.startsWith('blob:') ? msg.imageUrl : msg.imageUrl}
+                                        alt={msg.content || "Uploaded image"}
+                                        width={250}
+                                        height={250}
+                                        style={{ objectFit: 'cover', width: 'auto', height: 'auto', maxWidth: '250px', maxHeight: '250px', borderRadius: '12px', marginTop: '5px', display:'block', cursor: 'pointer', border: '1px solid var(--border-color)'}} 
+                                        onClick={(e) => {e.stopPropagation(); if (!msg.isOptimistic && msg.imageUrl && !msg.imageUrl.startsWith('blob:')) {openImageViewModal(msg.imageUrl);}}}
+                                        onError={() => setImageLoadErrors(prev => ({...prev, [msg.id]: true}))}
+                                    />
+                                )
+                            ) : ( <div className="message-content" style={{ padding: msg.senderId === currentUser.id ? '8px 12px' : (msg.sender ? '0px 0px 8px 31px' : '8px 12px'), wordBreak: 'break-word' }} dangerouslySetInnerHTML={{ __html: msg.content.replace(/\n/g, '<br />') }}></div> )}
                             {isExpanded && !msg.isOptimistic && ( <> <div className="message-timestamp" style={{ textAlign: msg.senderId === currentUser.id ? 'right' : 'left', marginLeft: msg.senderId !== currentUser.id && msg.sender ? '31px' : '0', color: msg.senderId === currentUser.id ? 'var(--timestamp-sent-text)' : 'var(--timestamp-received-text)' }}> {new Date(msg.createdAt).toLocaleTimeString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} </div> {msg.senderId === currentUser.id && getReadByNames(msg) && ( <div className={`read-receipts sent`}>{getReadByNames(msg)}</div> )} </> )}
                             {msg.isOptimistic && ( <div className="message-timestamp" style={{ textAlign: 'right', fontSize: '0.7em', color: 'var(--timestamp-sent-text)', marginTop: '4px' }}> <span style={{marginLeft: '5px', fontSize: '0.9em', opacity: 0.7}}>(Sending...)</span></div> )}
                             </div> );

@@ -3,7 +3,6 @@ import NextAuth from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
     import { PrismaAdapter } from '@next-auth/prisma-adapter'; // For session storage in DB
 import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcryptjs'; // If you implement password hashing
 
 const prisma = new PrismaClient();
 
@@ -16,7 +15,7 @@ export default NextAuth({
         username: { label: "Username", type: "text", placeholder: "jsmith" },
         password: {  label: "Password", type: "password" }
       },
-      async authorize(credentials, req) {
+      async authorize(credentials) {
         if (!credentials) {
           return null;
         }

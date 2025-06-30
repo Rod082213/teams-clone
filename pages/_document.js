@@ -1,5 +1,6 @@
 // pages/_document.js
 import { Html, Head, Main, NextScript } from 'next/document';
+import Script from 'next/script'; // <--- THIS LINE WAS MISSING. IT FIXES THE ERROR.
 
 export default function Document() {
   return (
@@ -17,19 +18,23 @@ export default function Document() {
       <body>
         <Main />
         <NextScript />
+
         {/* jQuery */}
         <Script
           src="https://code.jquery.com/jquery-3.6.0.min.js"
           integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4="
           crossOrigin="anonymous"
-        ></Script>
+          strategy="afterInteractive" // This prop is crucial for performance
+        />
+
         {/* EmojiOneArea JS */}
         <Script
           src="https://cdnjs.cloudflare.com/ajax/libs/emojionearea/3.4.2/emojionearea.min.js"
           integrity="sha512-hkvXFLlESjeYENO4CNi69z3AaSs6Y7qkHwwtLvsESKbveGHFhzNoth643EMN7yTDPU00rG/U02U13QIVGtl4rw=="
           crossOrigin="anonymous"
           referrerPolicy="no-referrer"
-        ></Script>
+          strategy="afterInteractive" // This prop is crucial for performance
+        />
       </body>
     </Html>
   );
